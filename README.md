@@ -11,6 +11,7 @@ This repository contains code and data needed to reproduce the article:
 **Raw data**
 - bat_comp_data.csv - Raw data used for the analysis.
 - hibernation_study.csv - Data used for comparing hibernation studies between the northern and southern hemisphere.
+- shp - Contains shape files from the [World Karst Aquifer Map](https://produktcenter.bgr.de/terraCatalog/OpenSearch.do?search=ab3b15cb-a6c3-42ea-ae0c-0b417d698949&type=/Query/OpenSearch.do). 
 
 ***R*** **code**
 - bat_comp_analysis.R - Data cleaning, analysis and figure production.
