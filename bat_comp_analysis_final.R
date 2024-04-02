@@ -5,7 +5,7 @@ pacman::p_load(Matrix, tidyverse, colorspace, cowplot, nlme, writexl,
 #devtools::install_github("alrobles/geotax")
 #library(geotax)
 
-## FUNCTIONS ## ----------------------------
+# Functions 
 mytheme <- function() {
   theme_bw() +
     theme(panel.border          = element_rect(fill = NA, colour = "black"), # set border around plot.
@@ -62,16 +62,16 @@ stack <- function(species_names = NA, path = getwd(), filename = NA, ...){
 # Set directory and file locations
 setwd('/Users/nicholaswu/Library/CloudStorage/OneDrive-WesternSydneyUniversity/WNS bat project - WSU/') # Macbook
 data_path    <- file.path("Manuscript - WNS comparative/data")
-phylo_path.  <- file.path("Methodology/Phylogeny")
+phylo_path   <- file.path("Methodology/Phylogeny")
 spatial_path <- file.path("Methodology/Spatial map")
 
 ## RAW DATA ## --------------------------
 bat_dat <- read.csv(file.path(data_path, "bat_comp_data.csv")) %>%
   dplyr::select(suborder:log10_Pd_load) %>%
-  dplyr::mutate(lnMass        = log(mass_g), 
-                log10_Pd_load = ifelse(Pd_load_ng_mm2_forearm_length > 0, log10(Pd_load_ng_mm2_forearm_length), NA),
+  dplyr::mutate(log10_Pd_load = ifelse(Pd_load_ng_mm2_forearm_length > 0, log10(Pd_load_ng_mm2_forearm_length), NA),
                 detected      = factor(detected),
                 detected_bin  = ifelse(detected == "yes", 1, 0),
+                Pd            = factor(Pd),
                 WNS           = factor(WNS),
                 WNS_decline   = factor(WNS_declining),
                 suborder      = factor(suborder),
@@ -194,12 +194,17 @@ ggtree::gheatmap(hib_phylo + ggnewscale::new_scale_fill(), trait_dat %>% dplyr::
   theme(legend.key.size = unit(2, 'mm'), legend.position = "bottom")
 
 ## PD BAT INCIDENCE MATRIX ## ----------------------------------
-wns_dat  <- phylo_dat %>% dplyr::filter(detected != "") %>% dplyr::select(detected, species_tree)
+pd_dat  <- phylo_dat %>% dplyr::filter(detected != "") %>% dplyr::select(detected, species_tree)
+pd_tree <- ape::drop.tip(pruned_tree, setdiff(pruned_tree$tip.label, pd_dat$species_tree))
+
+wns_dat  <- phylo_dat %>% dplyr::filter(WNS != "") %>% dplyr::select(WNS, species_tree)
 wns_tree <- ape::drop.tip(pruned_tree, setdiff(pruned_tree$tip.label, wns_dat$species_tree))
 
 # check if lengths match for both data and tree
-length(unique(wns_tree$tip.label)) # 65
-length(unique(wns_dat$species_tree)) # 65
+length(unique(pd_tree$tip.label)) # 65
+length(unique(pd_dat$species_tree)) # 65
+length(unique(wns_tree$tip.label)) # 52
+length(unique(wns_dat$species_tree)) # 52
 
 phylo_dat %>%
   dplyr::filter(detected != "") %>%
@@ -207,15 +212,48 @@ phylo_dat %>%
   summarise(n = length(genus)) %>%
   dplyr::arrange(-n)
 
+phylo_dat %>%
+  dplyr::filter(WNS_decline != "") %>%
+  group_by(genus) %>%
+  summarise(n = length(genus)) %>%
+  dplyr::arrange(-n)
+
+## For Pd-exposure risk
+# Calculate distance matrix
+pd_d <- ape::cophenetic.phylo(pd_tree) # computes the pairwise distances between the pairs of tips from a phylogenetic tree using its branch lengths
+pd_d <- log10(pd_d + 1)
+
+# Generate an incidence matrix from interaction data base
+bat_i_matrix_pd <- geotax::get_incidence_matrix(pd_dat)[, colnames(pd_d)]
+
+# Logistic regression coefficients for yes Pd and no Pd (only use yes)
+pd_coef <- sapply(1:nrow(bat_i_matrix_pd), function(x) geotax::log_reg_boostrap(bat_i_matrix_pd[x, , drop = F], pd_d, 1000) ) %>% t
+
+PD      <- seq(0, 60, 1) #x axis values across range of phylogenetic distances
+pd_ps1 <- apply(pd_coef[ ,c(1,7)], 1, function(x) geotax::prob_logit(x, log10(PD + 1))) %>%
+  data.frame() %>%
+  dplyr::rename(no = X1, yes = X2)
+
+pd_plot <- pd_ps1 %>%
+  dplyr::select(yes) %>%
+  tibble::add_column(pd = PD) %>%
+  ggplot(aes(x = pd, y = yes)) +
+  ylim(0, 1) +
+  geom_line(size = 1) +
+  labs(y = "Probability of Pd detection",
+       x = "Phylogenetic distance from source to target host (my)") +
+  mytheme()
+
+## For WNS
 # Calculate distance matrix
 wns_d <- ape::cophenetic.phylo(wns_tree) # computes the pairwise distances between the pairs of tips from a phylogenetic tree using its branch lengths
 wns_d <- log10(wns_d + 1)
 
 # Generate an incidence matrix from interaction data base
-bat_i_matrix <- geotax::get_incidence_matrix(wns_dat)[, colnames(wns_d)]
+bat_i_matrix_wns <- geotax::get_incidence_matrix(wns_dat)[, colnames(wns_d)]
 
 # Logistic regression coefficients for yes Pd and no Pd (only use yes)
-wns_coef <- sapply(1:nrow(bat_i_matrix), function(x) geotax::log_reg_boostrap(bat_i_matrix[x, , drop = F], wns_d, 1000) ) %>% t
+wns_coef <- sapply(1:nrow(bat_i_matrix_wns), function(x) geotax::log_reg_boostrap(bat_i_matrix_wns[x, , drop = F], wns_d, 1000) ) %>% t
 
 # probability phylogenetic distance
 PD      <- seq(0, 60, 1) #x axis values across range of phylogenetic distances
@@ -223,33 +261,72 @@ wns_ps1 <- apply(wns_coef[ ,c(1,7)], 1, function(x) geotax::prob_logit(x, log10(
   data.frame() %>%
   dplyr::rename(no = X1, yes = X2)
 
-pd_plot <- wns_ps1 %>%
+wns_plot <- wns_ps1 %>%
   dplyr::select(yes) %>%
   tibble::add_column(pd = PD) %>%
   ggplot(aes(x = pd, y = yes)) +
-  ylim(0.5, 1) +
+  ylim(0, 1) +
   geom_line(size = 1) +
-  labs(y = "Probability of Pd infection",
+  labs(y = "Probability of developing WNS",
        x = "Phylogenetic distance from source to target host (my)") +
   mytheme()
 
-cowplot::plot_grid(NULL, pd_plot, NULL, NULL, ncol = 2)
+cowplot::plot_grid(pd_plot, wns_plot, ncol = 2)
+
+levels(phylo_dat$continent_2)
+
+# Sensitivity analysis - Eurasia only
+asia_dat  <- phylo_dat %>% dplyr::filter(WNS != "" & continent_2 == "Asia/Europe") %>% dplyr::select(WNS, species_tree)
+asia_tree <- ape::drop.tip(pruned_tree, setdiff(pruned_tree$tip.label, asia_dat$species_tree))
+
+# Calculate distance matrix
+asia_d <- ape::cophenetic.phylo(asia_tree) # computes the pairwise distances between the pairs of tips from a phylogenetic tree using its branch lengths
+asia_d <- log10(asia_d + 1)
+
+# Generate an incidence matrix from interaction data base
+bat_i_matrix_asia <- geotax::get_incidence_matrix(asia_dat)[, colnames(asia_d)]
+
+# Logistic regression coefficients for yes Pd and no Pd (only use yes)
+asia_coef <- sapply(1:nrow(bat_i_matrix_asia), function(x) geotax::log_reg_boostrap(bat_i_matrix_asia[x, , drop = F], asia_d, 1000) ) %>% t
+
+# probability phylogenetic distance
+PD      <- seq(0, 60, 1) #x axis values across range of phylogenetic distances
+asia_ps1 <- apply(asia_coef[ ,c(1,7)], 1, function(x) geotax::prob_logit(x, log10(PD + 1))) %>%
+  data.frame() %>%
+  dplyr::rename(no = X1, yes = X2)
+
+asia_plot <- asia_ps1 %>%
+  dplyr::select(yes) %>%
+  tibble::add_column(pd = PD) %>%
+  ggplot(aes(x = pd, y = yes)) +
+  ylim(0, 1) +
+  geom_line(size = 1) +
+  labs(y = "Probability of developing WNS - Eurasia",
+       x = "Phylogenetic distance from source to target host (my)") +
+  mytheme()
+
+cowplot::plot_grid(wns_plot, asia_plot, ncol = 2)
+
 
 # Plot tree
-tree_plot  <- ggtree(wns_tree, layout = "rectangular")
+tree_plot  <- ggtree(pd_tree, layout = "rectangular")
 cont_phylo <- ggtree::gheatmap(tree_plot, trait_dat %>% dplyr::select(continent_2), offset = 0, width = 0.05, colnames_angle = 90, color = NA) +
   scale_fill_viridis_d(option = "viridis", name = NULL) +
   theme(legend.position = "bottom")
 
 detect_phylo <- ggtree::gheatmap(cont_phylo + new_scale_fill(), trait_dat %>% dplyr::select(detected), offset = 3, width = 0.05, colnames_angle = 90, color = NA) +
-  scale_fill_manual(values = c("#808080", "#e87674"), name = NULL) +
+  scale_fill_manual(values = c("#808080", "#e87674"), name = NULL, na.value = "#808080") +
   theme(legend.key.size = unit(2, 'mm'), legend.position = "bottom")
 
-declin_phylo <- ggtree::gheatmap(detect_phylo + new_scale_fill(), trait_dat %>% dplyr::select(WNS_decline), offset = 6, width = 0.05, colnames_angle = 90, color = NA) +
-  scale_fill_manual(values = c("white", "#D6302D"), name = NULL, na.value = "white") +
+wns_phylo <- ggtree::gheatmap(detect_phylo + new_scale_fill(), trait_dat %>% dplyr::select(WNS), offset = 6, width = 0.05, colnames_angle = 90, color = NA) +
+  scale_fill_manual(values = c("#808080", "#de5957"), name = NULL, na.value = "#808080") +
   theme(legend.key.size = unit(2, 'mm'), legend.position = "bottom")
 
-fam_phylo <- ggtree::gheatmap(declin_phylo + new_scale_fill(), trait_dat %>% dplyr::select(family), offset = 10, width = 0.01, colnames_angle = 90, color = NA) +
+declin_phylo <- ggtree::gheatmap(wns_phylo + new_scale_fill(), trait_dat %>% dplyr::select(WNS_decline), offset = 9, width = 0.05, colnames_angle = 90, color = NA) +
+  scale_fill_manual(values = c("#808080", "#D6302D"), name = NULL, na.value = "#808080") +
+  theme(legend.key.size = unit(2, 'mm'), legend.position = "bottom")
+
+fam_phylo <- ggtree::gheatmap(declin_phylo + new_scale_fill(), trait_dat %>% dplyr::select(family), offset = 13, width = 0.01, colnames_angle = 90, color = NA) +
   scale_fill_viridis_d(option = "magma", name = NULL) +
   theme(legend.key.size = unit(2, 'mm'), legend.position = "bottom")
 
@@ -271,9 +348,13 @@ gtable_show_layout(gt) # will show you the layout - very handy function
 gt$widths[7] = 0.3 * gt$widths[7] # in this case it was column 7 - reduce the width by a half
 grid::grid.draw(gt) # plot with grid draw
 
-# Phylogenetic signal
+# Phylogenetic signal - Pd load
 pd_load <- setNames(trait_dat$log10_Pd_load, rownames(trait_dat))
-phytools::phylosig(wns_tree, pd_load, method = "lambda", test = TRUE, nsim = 1000)
+phytools::phylosig(pd_tree, pd_load, method = "lambda", test = TRUE, nsim = 1000)
+
+test <- trait_dat %>% dplyr::filter(continent_2 == "Asia/Europe")
+test_load <- setNames(test$log10_Pd_load, rownames(test))
+phytools::phylosig(asia_tree, test_load, method = "lambda", test = TRUE, nsim = 1000)
 
 ## BAT SPECIES RICHNESS ## -----------------------------------------------
 filedir <- "/Users/nicholaswu/Library/CloudStorage/OneDrive-WesternSydneyUniversity/WNS bat project - WSU/Manuscript - WNS comparative/"
